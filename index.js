@@ -27,6 +27,7 @@ async function run() {
     await client.connect();
     const db = client.db("assetVerse");
     const hrCollections = db.collection("hrCollections");
+    const employeeCollections = db.collection("employeeCollections");
 
     // -----------------------
     // Register HR
@@ -109,6 +110,63 @@ async function run() {
       } catch (err) {
         console.error(err);
         res.status(500).send({ success: false, message: "Server error" });
+      }
+    });
+
+    // Register Employee
+    app.post("/register/employee", async (req, res) => {
+      try {
+        const employeeData = req.body;
+
+        // Basic validation
+        if (
+          !employeeData.name ||
+          !employeeData.email ||
+          !employeeData.password ||
+          !employeeData.dateOfBirth
+        ) {
+          return res.status(400).send({
+            success: false,
+            message: "Please fill in all required fields",
+          });
+        }
+
+        // Check if email already exists
+        const existingEmployee = await employeeCollections.findOne({
+          email: employeeData.email,
+        });
+
+        if (existingEmployee) {
+          return res.status(400).send({
+            success: false,
+            message: "Email already registered",
+          });
+        }
+
+        // Final employee object
+        const employeeUser = {
+          name: employeeData.name,
+          email: employeeData.email,
+          password: employeeData.password, // plain text (for now)
+          dateOfBirth: employeeData.dateOfBirth,
+          role: "employee",
+          createdAt: new Date(),
+        };
+
+        // Insert into MongoDB
+        const result = await employeeCollections.insertOne(employeeUser);
+
+        res.status(201).send({
+          success: true,
+          message: "Employee registered successfully",
+          data: result,
+        });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({
+          success: false,
+          message: "Server error",
+        });
       }
     });
 
