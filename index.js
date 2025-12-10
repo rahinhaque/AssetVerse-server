@@ -11,9 +11,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// MongoDB URI
 const uri = `mongodb+srv://${process.env.MONGO_USER}:${process.env.MONGO_PASS}@simple-crud-sever.mcwoj3p.mongodb.net/?appName=simple-crud-sever`;
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -24,21 +24,17 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
-
     const db = client.db("assetVerse");
     const hrCollections = db.collection("hrCollections");
 
-    //Hr's APIS
-    // Inside your run() function, after const hrCollections = db.collection("hrCollections");
-
+    // -----------------------
     // Register HR
+    // -----------------------
     app.post("/register/hr", async (req, res) => {
       try {
         const hrData = req.body;
 
-        // Basic validation
         if (
           !hrData.name ||
           !hrData.companyName ||
@@ -52,7 +48,6 @@ async function run() {
           });
         }
 
-        // Check if email already exists
         const existingHR = await hrCollections.findOne({ email: hrData.email });
         if (existingHR) {
           return res.status(400).send({
@@ -61,7 +56,6 @@ async function run() {
           });
         }
 
-        // Add auto-assigned fields
         const hrUser = {
           ...hrData,
           role: "hr",
@@ -71,7 +65,6 @@ async function run() {
           createdAt: new Date(),
         };
 
-        // Insert into MongoDB
         const result = await hrCollections.insertOne(hrUser);
 
         res.status(201).send({
@@ -88,14 +81,40 @@ async function run() {
       }
     });
 
-    // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    // -----------------------
+    // Login HR (Plain-text password)
+    // -----------------------
+    app.post("/login/hr", async (req, res) => {
+      try {
+        const { email, password } = req.body;
+
+        if (!email || !password)
+          return res
+            .status(400)
+            .send({ success: false, message: "Email & password required" });
+
+        const hr = await hrCollections.findOne({ email });
+        if (!hr)
+          return res
+            .status(401)
+            .send({ success: false, message: "User not found" });
+
+        // Compare plain-text password directly
+        if (hr.password !== password)
+          return res
+            .status(401)
+            .send({ success: false, message: "Wrong password" });
+
+        res.send({ success: true, message: "Login successful", hr });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ success: false, message: "Server error" });
+      }
+    });
+
+    console.log("MongoDB connected successfully!");
   } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
+    // client.close(); // Keep connection open for API
   }
 }
 run().catch(console.dir);
