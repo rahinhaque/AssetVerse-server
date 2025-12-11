@@ -1,3 +1,4 @@
+// backend/server.js
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -30,8 +31,54 @@ async function run() {
     const db = client.db("assetVerse");
     const hrCollections = db.collection("hrCollections");
     const employeeCollections = db.collection("employeeCollections");
+    const packagesCollection = db.collection("packages");
 
-    // ================= HR REGISTER =================
+    // ==================== Packages Seed ====================
+    const predefinedPackages = [
+      {
+        name: "Basic",
+        employeeLimit: 5,
+        price: 5,
+        features: ["Asset Tracking", "Employee Management", "Basic Support"],
+      },
+      {
+        name: "Standard",
+        employeeLimit: 10,
+        price: 8,
+        features: [
+          "All Basic features",
+          "Advanced Analytics",
+          "Priority Support",
+        ],
+      },
+      {
+        name: "Premium",
+        employeeLimit: 20,
+        price: 15,
+        features: ["All Standard features", "Custom Branding", "24/7 Support"],
+      },
+    ];
+
+    const existingPackages = await packagesCollection.countDocuments();
+    if (existingPackages === 0) {
+      await packagesCollection.insertMany(predefinedPackages);
+      console.log("📦 Packages inserted into DB");
+    }
+
+    // ==================== Packages Fetch ====================
+    app.get("/packages", async (req, res) => {
+      try {
+        const result = await packagesCollection.find().toArray();
+        res.send({ success: true, data: result });
+      } catch (err) {
+        console.error(err);
+        res
+          .status(500)
+          .send({ success: false, message: "Failed to fetch packages" });
+      }
+    });
+
+    // ==================== HR REGISTER ====================
     app.post("/register/hr", async (req, res) => {
       const { name, companyName, email, password, dateOfBirth, companyLogo } =
         req.body;
@@ -56,7 +103,7 @@ async function run() {
         companyName,
         companyLogo: companyLogo || "",
         email,
-        password, // ✅ plain text (as requested)
+        password, 
         dateOfBirth,
         role: "hr",
         packageLimit: 5,
@@ -73,7 +120,7 @@ async function run() {
       });
     });
 
-    // ================= HR LOGIN =================
+    // ==================== HR LOGIN ====================
     app.post("/login/hr", async (req, res) => {
       const { email, password } = req.body;
 
@@ -100,7 +147,7 @@ async function run() {
       res.send({ success: true, user: hr });
     });
 
-    // ================= EMPLOYEE REGISTER =================
+    // ==================== EMPLOYEE REGISTER ====================
     app.post("/register/employee", async (req, res) => {
       const { name, email, password, dateOfBirth } = req.body;
 
@@ -122,7 +169,7 @@ async function run() {
       const employeeUser = {
         name,
         email,
-        password, // ✅ plain text
+        password, 
         dateOfBirth,
         role: "employee",
         createdAt: new Date(),
@@ -136,7 +183,7 @@ async function run() {
       });
     });
 
-    // ================= EMPLOYEE LOGIN =================
+    // ==================== EMPLOYEE LOGIN ====================
     app.post("/login/employee", async (req, res) => {
       const { email, password } = req.body;
 
@@ -162,6 +209,8 @@ async function run() {
 
       res.send({ success: true, user: employee });
     });
+
+    console.log("🚀 Backend API ready!");
   } catch (err) {
     console.error(err);
   }
