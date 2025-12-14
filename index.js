@@ -1,4 +1,3 @@
-// server.js
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -33,8 +32,8 @@ async function run() {
     const packagesCollection = db.collection("packages");
     const assetsCollection = db.collection("assets");
     const requestsCollection = db.collection("requests");
-    const employeeAssetsCollection = db.collection("employeeAssets");
-    const affiliationCollection = db.collection("affiliations");
+    const employeeAssetsCollection = db.collection("assignedAssets");
+    const affiliationCollection = db.collection("employeeAffiliations");
 
     // ================= PACKAGES ROUTE =================
     app.get("/packages", async (req, res) => {
@@ -90,20 +89,6 @@ async function run() {
       }
     });
 
-    // in server.js
-    app.get("/packages", async (req, res) => {
-      try {
-        const packages = await packagesCollection.find().toArray();
-        // make sure to return success + data
-        res.send({ success: true, data: packages });
-      } catch (err) {
-        console.error(err);
-        res
-          .status(500)
-          .send({ success: false, message: "Failed to fetch packages" });
-      }
-    });
-
     // ================= HR LOGIN =================
     app.post("/login/hr", async (req, res) => {
       try {
@@ -133,8 +118,8 @@ async function run() {
     // ================= EMPLOYEE REGISTER =================
     app.post("/register/employee", async (req, res) => {
       try {
-        const { name, email, password, dateOfBirth, companyName } = req.body;
-        if (!name || !email || !password || !dateOfBirth || !companyName)
+        const { name, email, password, dateOfBirth } = req.body;
+        if (!name || !email || !password || !dateOfBirth)
           return res
             .status(400)
             .send({ success: false, message: "All fields are required" });
@@ -151,7 +136,6 @@ async function run() {
           password,
           dateOfBirth,
           role: "employee",
-          companyName,
           createdAt: new Date(),
         };
         await employeeCollections.insertOne(employeeUser);
@@ -189,6 +173,98 @@ async function run() {
       } catch (err) {
         console.error(err);
         res.status(500).send({ success: false, message: "Server error" });
+      }
+    });
+
+    // ================= AVAILABLE ASSETS FOR EMPLOYEE REQUESTS =================
+    app.get("/assets/available", async (req, res) => {
+      try {
+        const availableAssets = await assetsCollection
+          .find({ availableQuantity: { $gt: 0 } })
+          .toArray();
+
+        res.send({ success: true, data: availableAssets });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({
+          success: false,
+          message: "Failed to fetch available assets",
+        });
+      }
+    });
+
+    // ================= CREATE ASSET REQUEST (EMPLOYEE) =================
+    app.post("/requests", async (req, res) => {
+      try {
+        const {
+          assetId,
+          assetName,
+          assetType,
+          requesterName,
+          requesterEmail,
+          hrEmail,
+          companyName,
+          note,
+        } = req.body;
+
+        console.log("Incoming request payload:", req.body);
+
+        if (!assetId || !requesterEmail || !hrEmail || !companyName) {
+          return res.status(400).send({
+            success: false,
+            message: "Missing required fields",
+          });
+        }
+
+        if (!ObjectId.isValid(assetId)) {
+          return res.status(400).send({
+            success: false,
+            message: "Invalid asset ID format",
+          });
+        }
+
+        const asset = await assetsCollection.findOne({
+          _id: new ObjectId(assetId),
+          availableQuantity: { $gt: 0 },
+        });
+
+        if (!asset) {
+          return res.status(400).send({
+            success: false,
+            message: "Asset not found or not available",
+          });
+        }
+
+        const newRequest = {
+          assetId: new ObjectId(assetId),
+          assetName: assetName || asset.productName,
+          assetType: assetType || asset.productType,
+          requesterName,
+          requesterEmail,
+          hrEmail,
+          companyName,
+          requestDate: new Date(),
+          approvalDate: null,
+          requestStatus: "pending",
+          note: note || "",
+          processedBy: "",
+        };
+
+        const result = await requestsCollection.insertOne(newRequest);
+
+        console.log("Request saved:", result.insertedId);
+
+        res.status(201).send({
+          success: true,
+          message: "Request submitted successfully",
+          data: { ...newRequest, _id: result.insertedId },
+        });
+      } catch (err) {
+        console.error("Request creation error:", err);
+        res.status(500).send({
+          success: false,
+          message: "Server error while submitting request",
+        });
       }
     });
 
@@ -260,109 +336,277 @@ async function run() {
       }
     });
 
+    // ================= NEW: GET EMPLOYEE'S ASSIGNED ASSETS =================
+    app.get("/employee/assets/:email", async (req, res) => {
+      try {
+        const { email } = req.params;
+        const assignedAssets = await employeeAssetsCollection
+          .find({ employeeEmail: email })
+          .toArray();
+
+        res.send({ success: true, data: assignedAssets });
+      } catch (err) {
+        console.error("Error fetching employee assets:", err);
+        res
+          .status(500)
+          .send({ success: false, message: "Failed to fetch employee assets" });
+      }
+    });
+
+    // ================= NEW: RETURN ASSET ROUTE =================
+    app.patch("/assets/return/:assetId", async (req, res) => {
+      try {
+        const { assetId } = req.params;
+        const { employeeEmail } = req.body;
+
+        if (!employeeEmail) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Employee email required" });
+        }
+
+        // Update assigned asset status to returned
+        const updateResult = await employeeAssetsCollection.updateOne(
+          { assetId: new ObjectId(assetId), employeeEmail },
+          { $set: { status: "returned", returnDate: new Date() } }
+        );
+
+        if (updateResult.modifiedCount === 0) {
+          return res
+            .status(400)
+            .send({
+              success: false,
+              message: "Asset not found or not assigned to you",
+            });
+        }
+
+        // Increment asset quantity back
+        await assetsCollection.updateOne(
+          { _id: new ObjectId(assetId) },
+          { $inc: { productQuantity: 1, availableQuantity: 1 } }
+        );
+
+        res.send({ success: true, message: "Asset returned successfully" });
+      } catch (err) {
+        console.error("Return asset error:", err);
+        res
+          .status(500)
+          .send({ success: false, message: "Failed to return asset" });
+      }
+    });
+
+    // ================= APPROVE REQUEST (GUARANTEED AFFILIATION) =================
     app.patch("/requests/:id/approve", async (req, res) => {
       try {
         const id = req.params.id;
+
+        if (!ObjectId.isValid(id)) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Invalid request ID format" });
+        }
+
         const request = await requestsCollection.findOne({
           _id: new ObjectId(id),
         });
-        if (!request)
+
+        if (!request) {
           return res
             .status(404)
             .send({ success: false, message: "Request not found" });
+        }
 
-        await assetsCollection.updateOne(
-          { _id: new ObjectId(request.assetId) },
-          { $inc: { productQuantity: -1, availableQuantity: -1 } }
-        );
+        if (request.requestStatus === "Approved") {
+          return res.send({
+            success: true,
+            message: "Request already approved",
+          });
+        }
 
-        await requestsCollection.updateOne(
-          { _id: new ObjectId(id) },
-          {
-            $set: {
-              status: "Approved",
-              approvalDate: new Date(),
-              processedBy: request.hrEmail,
-            },
-          }
-        );
+        if (request.requestStatus !== "pending") {
+          return res
+            .status(400)
+            .send({ success: false, message: "Request cannot be approved" });
+        }
 
-        await employeeAssetsCollection.insertOne({
-          employeeEmail: request.requesterEmail,
-          employeeName: request.requesterName,
-          assetName: request.assetName,
-          assetId: request.assetId,
-          dateAssigned: new Date(),
-        });
+        // Guard against missing fields
+        if (
+          !request.requesterEmail ||
+          !request.requesterName ||
+          !request.companyName
+        ) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Missing employee data" });
+        }
 
-        await affiliationCollection.updateOne(
+        // Safe assetId
+        let assetObjectId;
+        if (!request.assetId) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Missing asset ID in request" });
+        }
+        if (typeof request.assetId === "string") {
+          assetObjectId = new ObjectId(request.assetId);
+        } else {
+          assetObjectId = request.assetId;
+        }
+
+        // ALWAYS CREATE AFFILIATION FIRST
+        const affiliationResult = await affiliationCollection.updateOne(
           { employeeEmail: request.requesterEmail },
           {
-            $setOnInsert: {
-              createdAt: new Date(),
+            $set: {
+              employeeName: request.requesterName,
+              hrEmail: request.hrEmail || "",
               companyName: request.companyName,
+              companyLogo: "",
+              affiliationDate: new Date(),
+              status: "active",
             },
           },
           { upsert: true }
         );
 
-        res.send({ success: true });
+        console.log("Employee affiliated:", affiliationResult);
+
+        // Decrement quantity (ignore if fails)
+        try {
+          await assetsCollection.updateOne(
+            { _id: assetObjectId },
+            { $inc: { productQuantity: -1, availableQuantity: -1 } }
+          );
+        } catch (assetErr) {
+          console.log(
+            "Asset update failed (out of stock?), but proceeding:",
+            assetErr
+          );
+        }
+
+        // Update request status
+        await requestsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              requestStatus: "Approved",
+              approvalDate: new Date(),
+              processedBy: request.hrEmail || "",
+            },
+          }
+        );
+
+        // Assign asset
+        await employeeAssetsCollection.insertOne({
+          assetId: assetObjectId,
+          assetName: request.assetName || "Unknown",
+          assetImage: "",
+          assetType: request.assetType || "Unknown",
+          employeeEmail: request.requesterEmail,
+          employeeName: request.requesterName,
+          hrEmail: request.hrEmail || "",
+          companyName: request.companyName,
+          assignmentDate: new Date(),
+          returnDate: null,
+          status: "assigned",
+        });
+
+        res.send({
+          success: true,
+          message: "Request approved and employee added to team",
+        });
       } catch (err) {
-        console.error(err);
-        res.status(500).send({ success: false, message: "Approve failed" });
+        console.error("Approve error:", err);
+        res
+          .status(500)
+          .send({ success: false, message: "Server error during approval" });
       }
     });
 
+    // ================= REJECT REQUEST =================
     app.patch("/requests/:id/reject", async (req, res) => {
       try {
         const id = req.params.id;
-        await requestsCollection.updateOne(
+        const { hrEmail } = req.body;
+
+        if (!ObjectId.isValid(id)) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Invalid request ID format" });
+        }
+
+        const updateResult = await requestsCollection.updateOne(
           { _id: new ObjectId(id) },
-          { $set: { status: "Rejected", processedBy: req.body.hrEmail || "" } }
+          {
+            $set: {
+              requestStatus: "Rejected",
+              processedBy: hrEmail || "",
+            },
+          }
         );
-        res.send({ success: true });
+
+        if (updateResult.modifiedCount === 0) {
+          return res
+            .status(404)
+            .send({ success: false, message: "Request not found" });
+        }
+
+        res.send({ success: true, message: "Request rejected" });
       } catch (err) {
-        console.error(err);
+        console.error("Reject error:", err);
         res.status(500).send({ success: false, message: "Reject failed" });
       }
     });
 
-    // ================= HR EMPLOYEE MANAGEMENT =================
+    // ================= MY EMPLOYEE LIST =================
     app.get("/hr/employees/:companyName", async (req, res) => {
       try {
         const { companyName } = req.params;
 
-        const employees = await employeeCollections
-          .find({ companyName })
+        const affiliatedEmployees = await affiliationCollection
+          .find({ companyName, status: "active" })
           .toArray();
 
         const employeeWithAssets = await Promise.all(
-          employees.map(async (emp) => {
+          affiliatedEmployees.map(async (aff) => {
             const assetsCount = await employeeAssetsCollection.countDocuments({
-              employeeEmail: emp.email,
+              employeeEmail: aff.employeeEmail,
             });
-            return { ...emp, assetsCount };
+            return {
+              employeeName: aff.employeeName,
+              employeeEmail: aff.employeeEmail,
+              affiliationDate: aff.affiliationDate,
+              assetsCount,
+            };
           })
         );
 
         res.send({ success: true, data: employeeWithAssets });
       } catch (err) {
-        console.error(err);
+        console.error("Employee list error:", err);
         res
           .status(500)
           .send({ success: false, message: "Failed to fetch employees" });
       }
     });
 
+    // ================= REMOVE EMPLOYEE FROM TEAM =================
     app.delete("/hr/employees/:email", async (req, res) => {
       try {
         const { email } = req.params;
-        const result = await employeeCollections.deleteOne({ email });
-        if (result.deletedCount === 0)
+
+        const result = await affiliationCollection.updateOne(
+          { employeeEmail: email },
+          { $set: { status: "inactive" } }
+        );
+
+        if (result.modifiedCount === 0) {
           return res
             .status(404)
             .send({ success: false, message: "Employee not found" });
-        res.send({ success: true, message: "Employee removed" });
+        }
+
+        res.send({ success: true, message: "Employee removed from team" });
       } catch (err) {
         console.error(err);
         res
