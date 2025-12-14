@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import multer from "multer";
 import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
 
 dotenv.config();
@@ -10,6 +11,9 @@ const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
+
+// Multer configuration for file upload (stored in memory)
+const upload = multer({ storage: multer.memoryStorage() });
 
 // MongoDB URI
 const uri = `mongodb+srv://${process.env.MONGO_USER}:${process.env.MONGO_PASS}@simple-crud-sever.mcwoj3p.mongodb.net/?appName=simple-crud-sever`;
@@ -372,12 +376,10 @@ async function run() {
         );
 
         if (updateResult.modifiedCount === 0) {
-          return res
-            .status(400)
-            .send({
-              success: false,
-              message: "Asset not found or not assigned to you",
-            });
+          return res.status(400).send({
+            success: false,
+            message: "Asset not found or not assigned to you",
+          });
         }
 
         // Increment asset quantity back
@@ -392,6 +394,71 @@ async function run() {
         res
           .status(500)
           .send({ success: false, message: "Failed to return asset" });
+      }
+    });
+
+    // ================= NEW: GET EMPLOYEE'S AFFILIATIONS =================
+    app.get("/employee/affiliations/:email", async (req, res) => {
+      try {
+        const { email } = req.params;
+        const affiliations = await affiliationCollection
+          .find({ employeeEmail: email, status: "active" })
+          .toArray();
+
+        res.send({ success: true, data: affiliations });
+      } catch (err) {
+        console.error("Error fetching affiliations:", err);
+        res
+          .status(500)
+          .send({ success: false, message: "Failed to fetch affiliations" });
+      }
+    });
+
+    // ================= UPDATE EMPLOYEE PROFILE (WITH PHOTO UPLOAD SUPPORT) =================
+    app.patch("/employee/profile", upload.single("photo"), async (req, res) => {
+      try {
+        const email = req.headers["x-user-email"];
+        if (!email) {
+          return res
+            .status(401)
+            .send({ success: false, message: "Unauthorized - missing email" });
+        }
+
+        const { name, dateOfBirth } = req.body;
+        const photo = req.file;
+
+        const updateFields = {};
+        if (name) updateFields.name = name;
+        if (dateOfBirth) updateFields.dateOfBirth = new Date(dateOfBirth);
+
+        if (photo) {
+          const base64 = photo.buffer.toString("base64");
+          updateFields.photoURL = `data:${photo.mimetype};base64,${base64}`;
+        }
+
+        if (Object.keys(updateFields).length === 0) {
+          return res
+            .status(400)
+            .send({ success: false, message: "No data to update" });
+        }
+
+        const result = await employeeCollections.updateOne(
+          { email },
+          { $set: updateFields }
+        );
+
+        if (result.modifiedCount === 0) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Nothing updated" });
+        }
+
+        res.send({ success: true, message: "Profile updated successfully" });
+      } catch (err) {
+        console.error("Profile update error:", err);
+        res
+          .status(500)
+          .send({ success: false, message: "Failed to update profile" });
       }
     });
 
@@ -558,7 +625,7 @@ async function run() {
       }
     });
 
-    // ================= MY EMPLOYEE LIST =================
+    // ================= MY EMPLOYEE LIST (UPDATED TO INCLUDE dateOfBirth FOR BIRTHDAYS) =================
     app.get("/hr/employees/:companyName", async (req, res) => {
       try {
         const { companyName } = req.params;
@@ -567,21 +634,27 @@ async function run() {
           .find({ companyName, status: "active" })
           .toArray();
 
-        const employeeWithAssets = await Promise.all(
+        const employeeWithDetails = await Promise.all(
           affiliatedEmployees.map(async (aff) => {
+            const employeeDetails = await employeeCollections.findOne({
+              email: aff.employeeEmail,
+            });
+
             const assetsCount = await employeeAssetsCollection.countDocuments({
               employeeEmail: aff.employeeEmail,
             });
+
             return {
               employeeName: aff.employeeName,
               employeeEmail: aff.employeeEmail,
               affiliationDate: aff.affiliationDate,
               assetsCount,
+              dateOfBirth: employeeDetails?.dateOfBirth || null,
             };
           })
         );
 
-        res.send({ success: true, data: employeeWithAssets });
+        res.send({ success: true, data: employeeWithDetails });
       } catch (err) {
         console.error("Employee list error:", err);
         res
