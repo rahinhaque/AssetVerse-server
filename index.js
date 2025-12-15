@@ -28,7 +28,7 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     await client.connect();
-    console.log("✅ MongoDB connected");
+    console.log("MongoDB connected");
 
     const db = client.db("assetVerse");
     const hrCollections = db.collection("hrCollections");
@@ -327,6 +327,100 @@ async function run() {
       }
     });
 
+    // ================= DELETE ASSET =================
+    app.delete("/assets/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        if (!ObjectId.isValid(id)) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Invalid asset ID" });
+        }
+
+        const result = await assetsCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+        if (result.deletedCount === 0) {
+          return res
+            .status(404)
+            .send({ success: false, message: "Asset not found" });
+        }
+
+        res.send({ success: true, message: "Asset deleted successfully" });
+      } catch (err) {
+        console.error("Delete asset error:", err);
+        res
+          .status(500)
+          .send({ success: false, message: "Failed to delete asset" });
+      }
+    });
+
+    // ================= UPDATE ASSET =================
+    app.put("/assets/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        if (!ObjectId.isValid(id)) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Invalid asset ID" });
+        }
+
+        const { productName, productImage, productType, productQuantity } =
+          req.body;
+
+        if (!productName || !productType || productQuantity == null) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Missing required fields" });
+        }
+
+        const currentAsset = await assetsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        if (!currentAsset) {
+          return res
+            .status(404)
+            .send({ success: false, message: "Asset not found" });
+        }
+
+        const assignedCount =
+          currentAsset.productQuantity - currentAsset.availableQuantity;
+        const newAvailable = Number(productQuantity) - assignedCount;
+        if (newAvailable < 0) {
+          return res.status(400).send({
+            success: false,
+            message: "Cannot reduce quantity below assigned assets",
+          });
+        }
+
+        const result = await assetsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              productName,
+              productImage: productImage || "",
+              productType,
+              productQuantity: Number(productQuantity),
+              availableQuantity: newAvailable,
+            },
+          }
+        );
+
+        if (result.modifiedCount === 0) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Nothing updated" });
+        }
+
+        res.send({ success: true, message: "Asset updated successfully" });
+      } catch (err) {
+        console.error("Update asset error:", err);
+        res
+          .status(500)
+          .send({ success: false, message: "Failed to update asset" });
+      }
+    });
+
     // ================= REQUESTS =================
     app.get("/requests", async (req, res) => {
       try {
@@ -369,7 +463,6 @@ async function run() {
             .send({ success: false, message: "Employee email required" });
         }
 
-        // Update assigned asset status to returned
         const updateResult = await employeeAssetsCollection.updateOne(
           { assetId: new ObjectId(assetId), employeeEmail },
           { $set: { status: "returned", returnDate: new Date() } }
@@ -382,7 +475,6 @@ async function run() {
           });
         }
 
-        // Increment asset quantity back
         await assetsCollection.updateOne(
           { _id: new ObjectId(assetId) },
           { $inc: { productQuantity: 1, availableQuantity: 1 } }
@@ -459,6 +551,100 @@ async function run() {
         res
           .status(500)
           .send({ success: false, message: "Failed to update profile" });
+      }
+    });
+
+    // ================= NEW: HR DIRECT ASSET ASSIGNMENT =================
+    app.post("/hr/assign-asset", async (req, res) => {
+      try {
+        const { employeeEmail, assetId } = req.body;
+
+        if (!employeeEmail || !assetId) {
+          return res
+            .status(400)
+            .send({
+              success: false,
+              message: "Employee email and asset ID required",
+            });
+        }
+
+        if (!ObjectId.isValid(assetId)) {
+          return res
+            .status(400)
+            .send({ success: false, message: "Invalid asset ID" });
+        }
+
+        // Check if asset is available
+        const asset = await assetsCollection.findOne({
+          _id: new ObjectId(assetId),
+          availableQuantity: { $gt: 0 },
+        });
+
+        if (!asset) {
+          return res
+            .status(400)
+            .send({
+              success: false,
+              message: "Asset not available or not found",
+            });
+        }
+
+        // Get employee name for assignment
+        const employee = await employeeCollections.findOne({
+          email: employeeEmail,
+        });
+        if (!employee) {
+          return res
+            .status(404)
+            .send({ success: false, message: "Employee not found" });
+        }
+
+        // Decrement asset quantity
+        await assetsCollection.updateOne(
+          { _id: new ObjectId(assetId) },
+          { $inc: { productQuantity: -1, availableQuantity: -1 } }
+        );
+
+        // Create assignment record
+        await employeeAssetsCollection.insertOne({
+          assetId: new ObjectId(assetId),
+          assetName: asset.productName,
+          assetImage: asset.productImage || "",
+          assetType: asset.productType,
+          employeeEmail,
+          employeeName: employee.name,
+          hrEmail: asset.hrEmail,
+          companyName: asset.companyName,
+          assignmentDate: new Date(),
+          returnDate: null,
+          status: "assigned",
+        });
+
+        // Ensure affiliation exists
+        await affiliationCollection.updateOne(
+          { employeeEmail },
+          {
+            $set: {
+              employeeName: employee.name,
+              hrEmail: asset.hrEmail,
+              companyName: asset.companyName,
+              companyLogo: "",
+              affiliationDate: new Date(),
+              status: "active",
+            },
+          },
+          { upsert: true }
+        );
+
+        res.send({
+          success: true,
+          message: "Asset assigned successfully to employee",
+        });
+      } catch (err) {
+        console.error("HR assign asset error:", err);
+        res
+          .status(500)
+          .send({ success: false, message: "Failed to assign asset" });
       }
     });
 
@@ -688,7 +874,7 @@ async function run() {
       }
     });
 
-    console.log("🚀 Backend API ready!");
+    console.log("Backend API ready!");
   } catch (err) {
     console.error(err);
   }
@@ -696,5 +882,5 @@ async function run() {
 
 run();
 
-app.get("/", (req, res) => res.send("✅ Server running"));
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.get("/", (req, res) => res.send("Server running"));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
